@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/42wim/matterbridge/matterclient"
 	"github.com/42wim/matterircd/config"
@@ -43,6 +44,7 @@ type MmCfg struct {
 	PrefixMainTeam     bool
 	PasteBufferTimeout int
 	DisableAutoView    bool
+	PreferNickname     bool
 }
 
 func NewUserMM(c net.Conn, srv Server, cfg *MmCfg) *User {
@@ -63,6 +65,7 @@ func NewUserMM(c net.Conn, srv Server, cfg *MmCfg) *User {
 	u.MmInfo.Cfg.SkipTLSVerify = cfg.MattermostSettings.SkipTLSVerify
 	u.MmInfo.Cfg.PrefixMainTeam = cfg.MattermostSettings.PrefixMainTeam
 	u.MmInfo.Cfg.DisableAutoView = cfg.MattermostSettings.DisableAutoView
+	u.MmInfo.Cfg.PreferNickname = cfg.MattermostSettings.PreferNickname
 
 	u.idleStop = make(chan struct{})
 	// used for login
@@ -114,14 +117,34 @@ func (u *User) logoutFromMattermost() error {
 	return nil
 }
 
+func (u *User) isValidNick(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+
+	for i := 0; i < len(s); i++ {
+		if s[i] > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
 func (u *User) createMMUser(mmuser *model.User) *User {
 	if mmuser == nil {
 		return nil
 	}
-	if ghost, ok := u.Srv.HasUser(mmuser.Username); ok {
+
+	nick := mmuser.Username
+	if (u.Cfg.PreferNickname && u.isValidNick(mmuser.Nickname)) {
+		nick = mmuser.Nickname
+	}
+
+	if ghost, ok := u.Srv.HasUser(nick); ok {
 		return ghost
 	}
-	ghost := &User{Nick: mmuser.Username, User: mmuser.Id, Real: mmuser.FirstName + " " + mmuser.LastName, Host: u.mc.Client.Url, Roles: mmuser.Roles, channels: map[Channel]struct{}{}}
+
+	ghost := &User{Nick: nick, User: mmuser.Id, Real: mmuser.FirstName + " " + mmuser.LastName, Host: u.mc.Client.Url, Roles: mmuser.Roles, channels: map[Channel]struct{}{}}
 	ghost.MmGhostUser = true
 	u.Srv.Add(ghost)
 	return ghost
@@ -240,7 +263,11 @@ func (u *User) addUserToChannelWorker(channels <-chan *model.Channel, throttle <
 						spoof("matterircd", fmt.Sprintf("Replaying since %s", date))
 						prevDate = date
 					}
-					spoof(user.Username, fmt.Sprintf("[%s] %s", ts.Format("15:04"), post))
+					nick := user.Username
+					if (u.Cfg.PreferNickname && u.isValidNick(user.Nickname)) {
+						nick = user.Nickname
+					}
+					spoof(nick, fmt.Sprintf("[%s] %s", ts.Format("15:04"), post))
 				}
 			}
 		}
